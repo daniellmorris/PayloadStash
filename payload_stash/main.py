@@ -8,7 +8,7 @@ import yaml
 
 from . import __version__
 from .config_schema import validate_config_path, format_validation_error, build_resolved_config_dict
-from .config_utility import resolve_captured_refs, evaluate_expect, resolve_response_path
+from .config_utility import evaluate_expect, resolve_response_path
 
 
 def _write_markdown_report(report_path, sc_name: str, config_stem: str, started_ts: str, entries: list) -> None:
@@ -338,7 +338,7 @@ def run(config: Path, out_dir: Path, dry_run: bool, yes: bool, secrets: Path | N
 
             # Run-level state added for Capture and Expect features.
             # - captured: accumulates values extracted from responses via Capture blocks.
-            #   Later requests reference these with ${captured.KEY} in any field.
+            #   Later requests reference these via { $pattern: "${captured:KEY}" } in any field.
             # - captures_lock: guards captured for thread-safe reads/writes in concurrent sequences.
             #   Also reused to guard run_expect_failures since it's mutated from request threads.
             # - report_entries: collects per-request data for the markdown report written at run end.
@@ -423,10 +423,10 @@ def run(config: Path, out_dir: Path, dry_run: bool, yes: bool, secrets: Path | N
                 # into _process_single_request so it runs just before each HTTP call.
                 #
                 # Why the move: the new Capture feature stores values from one response and makes
-                # them available to later requests via ${captured.KEY}. Those values don't exist
-                # until a request has actually run, so they can't be resolved upfront for all
-                # requests at once. By resolving everything just-in-time inside _process_single_request,
-                # both $deferred dynamics and ${captured.KEY} refs resolve in a single pass with
+                # them available to later requests via { $pattern: "${captured:KEY}" }. Those values
+                # don't exist until a request has actually run, so they can't be resolved upfront for
+                # all requests at once. By resolving everything just-in-time inside _process_single_request,
+                # $pattern and other $deferred markers all resolve in a single pass with
                 # the correct runtime state. Existing behavior for all non-Capture configs is
                 # identical — deferred values still resolve at the same logical moment.
                 req_items = seq_d.get("Requests", [])
@@ -533,17 +533,15 @@ def run(config: Path, out_dir: Path, dry_run: bool, yes: bool, secrets: Path | N
                     # headers_out, data_bytes. The prepare loop did all resolution upfront.
                     #
                     # Now it receives the raw r_val dict and does all resolution here, just before
-                    # the HTTP call. This is required for Capture: ${captured.KEY} refs in headers,
-                    # body, query, or url_path must be substituted with values populated by earlier
+                    # the HTTP call. This is required for Capture: { $pattern: "${captured:KEY}" }
+                    # fields reference values populated by earlier
                     # requests that have already executed, which isn't possible if resolution
                     # happens upfront for all requests at once.
                     #
-                    # Resolution order matters:
-                    #   1. resolve_captured_refs — substitute ${captured.KEY} from the shared dict
-                    #   2. resolve_deferred      — materialize $deferred dynamics and timestamps
-                    # Captured refs are applied first so that a captured value like "RES-${uuid}"
-                    # (a deferred pattern) could in theory itself contain deferred markers, though
-                    # in practice captured values are already-materialized strings.
+                    # resolve_deferred is called with the current captures snapshot so $pattern,
+                    # $dynamic(when:request), and $timestamp(when:request) all expand in one pass
+                    # with the correct runtime state. $pattern is always request-time, which is
+                    # what makes ${captured:KEY} inside a $pattern template work correctly.
                     #
                     # Return value extended from (idx, lines) to (idx, lines, expect_fail_count)
                     # to propagate Expect failures up to the run-level counter.
@@ -567,20 +565,13 @@ def run(config: Path, out_dir: Path, dry_run: bool, yes: bool, secrets: Path | N
                     capture_cfg = r_val.get("Capture")
                     expect_cfg = r_val.get("Expect")
 
-                    # Step 1: substitute ${captured.KEY} refs before deferred resolution.
-                    if caps_snap:
-                        url_path = resolve_captured_refs(url_path, caps_snap)
-                        headers_raw = resolve_captured_refs(headers_raw, caps_snap) if headers_raw is not None else None
-                        body_raw = resolve_captured_refs(body_raw, caps_snap) if body_raw is not None else None
-                        query_raw = resolve_captured_refs(query_raw, caps_snap) if query_raw is not None else None
-                        if expect_cfg is not None:
-                            expect_cfg = resolve_captured_refs(expect_cfg, caps_snap)
-
-                    # Step 2: materialize $deferred markers (request-time dynamics, timestamps).
-                    # This is the same resolve_deferred call that previously lived in the prepare loop.
-                    headers_res = resolve_deferred(headers_raw, secrets=secrets_map) if headers_raw is not None else None
-                    body_res = resolve_deferred(body_raw, secrets=secrets_map) if body_raw is not None else None
-                    query_res = resolve_deferred(query_raw, secrets=secrets_map) if query_raw is not None else None
+                    # Materialize $deferred markers with captures snapshot so $pattern templates
+                    # containing ${captured:KEY} resolve to the correct runtime values.
+                    headers_res = resolve_deferred(headers_raw, secrets=secrets_map, captures=caps_snap) if headers_raw is not None else None
+                    body_res = resolve_deferred(body_raw, secrets=secrets_map, captures=caps_snap) if body_raw is not None else None
+                    query_res = resolve_deferred(query_raw, secrets=secrets_map, captures=caps_snap) if query_raw is not None else None
+                    if expect_cfg is not None:
+                        expect_cfg = resolve_deferred(expect_cfg, secrets=secrets_map, captures=caps_snap)
 
                     # Build URL
                     base = (url_root or "").rstrip('/')
@@ -686,7 +677,7 @@ def run(config: Path, out_dir: Path, dry_run: bool, yes: bool, secrets: Path | N
 
                         # Capture: extract named values from the response and store them in the
                         # run-level captured dict. Subsequent requests can reference these via
-                        # ${captured.KEY} in any field (url, headers, body, query, expect).
+                        # via { $pattern: "${captured:KEY}" } in any field (headers, body, query, expect).
                         if capture_cfg:
                             new_captures = {}
                             for cap_name, cap_path in capture_cfg.items():

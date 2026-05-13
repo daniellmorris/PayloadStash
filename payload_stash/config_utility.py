@@ -31,7 +31,7 @@ _HEX_CHARS = "0123456789ABCDEF"
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}:]+)(?::([^}:]+))?(?::([^}]+))?\}")
 
 
-def dynamic_expand(template: str, sets: Optional[Dict[str, List[str]]] = None, *, secrets: Optional[Dict[str, str]] = None, redact_secrets: bool = False) -> str:
+def dynamic_expand(template: str, sets: Optional[Dict[str, List[str]]] = None, *, secrets: Optional[Dict[str, str]] = None, redact_secrets: bool = False, captures: Optional[Dict[str, Any]] = None) -> str:
     """
     Expand a dynamic template string using supported placeholders.
 
@@ -100,6 +100,13 @@ def dynamic_expand(template: str, sets: Optional[Dict[str, List[str]]] = None, *
             n = int(arg1)
             chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
             return "".join(random.choice(chars) for _ in range(n))
+        if name == "captured":
+            key = arg1
+            if not key:
+                return m.group(0)
+            if captures and key in captures:
+                return str(captures[key])
+            return m.group(0)  # not yet available — leave as-is
         # Unknown placeholder: leave as-is to avoid data loss
         return m.group(0)
 
@@ -124,12 +131,13 @@ def dynamic_expand(template: str, sets: Optional[Dict[str, List[str]]] = None, *
     return out
 
 
-def resolve_deferred(value: Any, *, secrets: Optional[Dict[str, str]] = None, redact_secrets: bool = False) -> Any:
+def resolve_deferred(value: Any, *, secrets: Optional[Dict[str, str]] = None, redact_secrets: bool = False, captures: Optional[Dict[str, Any]] = None) -> Any:
     """Recursively resolve any "$deferred" function or dynamic objects.
 
     Supported deferred marker shapes:
       {"$deferred": {"func": "timestamp", "format": "iso_8601"}}
       {"$deferred": {"dynamic": {"template": "...", "sets": {...}}}}
+      {"$deferred": {"pattern": {"template": "...", "sets": {...}}}}
     """
     if isinstance(value, Mapping):
         if "$deferred" in value:
@@ -146,19 +154,25 @@ def resolve_deferred(value: Any, *, secrets: Optional[Dict[str, str]] = None, re
                 sets = dyn.get("sets") or {}
                 if not isinstance(template, str):
                     return value
-                return dynamic_expand(template, sets, secrets=secrets, redact_secrets=redact_secrets)
+                return dynamic_expand(template, sets, secrets=secrets, redact_secrets=redact_secrets, captures=captures)
+            pat = payload.get("pattern")
+            if isinstance(pat, Mapping):
+                template = pat.get("template")
+                sets = pat.get("sets") or {}
+                if not isinstance(template, str):
+                    return value
+                return dynamic_expand(template, sets, secrets=secrets, redact_secrets=redact_secrets, captures=captures)
             # Unknown deferred payload: return as-is
             return value
         # else recurse into mapping
-        return {k: resolve_deferred(v, secrets=secrets, redact_secrets=redact_secrets) for k, v in value.items()}
+        return {k: resolve_deferred(v, secrets=secrets, redact_secrets=redact_secrets, captures=captures) for k, v in value.items()}
     if isinstance(value, list):
-        return [resolve_deferred(v, secrets=secrets, redact_secrets=redact_secrets) for v in value]
+        return [resolve_deferred(v, secrets=secrets, redact_secrets=redact_secrets, captures=captures) for v in value]
     return value
 
 
 import json as _json_module
 
-_CAPTURED_RE = re.compile(r'\$\{captured\.([^}]+)\}')
 _PATH_ARRAY_RE = re.compile(r'^\[(\d+)\](.*)', re.DOTALL)
 _PATH_DOT_RE = re.compile(r'^\.([^\.\[]+)(.*)', re.DOTALL)
 
@@ -208,19 +222,6 @@ def resolve_response_path(path: str, status: int, headers: Dict[str, str], body_
             return None
     return None
 
-
-def resolve_captured_refs(value: Any, captures: Dict[str, Any]) -> Any:
-    """Replace ${captured.KEY} placeholders with values from the captures dict."""
-    if isinstance(value, str):
-        def _repl(m: re.Match) -> str:
-            v = captures.get(m.group(1))
-            return str(v) if v is not None else m.group(0)
-        return _CAPTURED_RE.sub(_repl, value)
-    if isinstance(value, dict):
-        return {k: resolve_captured_refs(v, captures) for k, v in value.items()}
-    if isinstance(value, list):
-        return [resolve_captured_refs(v, captures) for v in value]
-    return value
 
 
 def _apply_matcher(matcher_key: str, actual: Any, expected: Any) -> Tuple[bool, str]:
