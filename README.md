@@ -61,7 +61,7 @@ The image is published to GitHub Container Registry on every push to `main` and 
 **One-liner:**
 
 ```bash
-docker run --rm \
+docker run --rm --platform linux/amd64 \
   -v "$(pwd)/config:/app/config" \
   -v "$(pwd)/output:/app/output" \
   ghcr.io/ericwastaken/payloadstash:main \
@@ -71,7 +71,7 @@ docker run --rm \
 **Alias** — add to `~/.bashrc` or `~/.zshrc` for everyday use:
 
 ```bash
-alias payloadstash='docker run --rm -v "$(pwd)/config:/app/config" -v "$(pwd)/output:/app/output" ghcr.io/ericwastaken/payloadstash:main'
+alias payloadstash='docker run --rm --platform linux/amd64 -v "$(pwd)/config:/app/config" -v "$(pwd)/output:/app/output" ghcr.io/ericwastaken/payloadstash:main'
 ```
 
 After sourcing your shell profile, use it exactly like the native CLI:
