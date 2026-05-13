@@ -54,6 +54,43 @@ python -m venv .venv && .venv/bin/python -m pip install -U pip && .venv/bin/pip 
 
 ## Quick Start - Docker Execution
 
+### Using the pre-built image (no build step required)
+
+The image is published to GitHub Container Registry on every push to `main` and on version tags.
+
+**One-liner:**
+
+```bash
+docker run --rm \
+  -v "$(pwd)/config:/app/config" \
+  -v "$(pwd)/output:/app/output" \
+  ghcr.io/ericwastaken/payloadstash:main \
+  run config-example.yml --out /app/output
+```
+
+**Alias** — add to `~/.bashrc` or `~/.zshrc` for everyday use:
+
+```bash
+alias payloadstash='docker run --rm -v "$(pwd)/config:/app/config" -v "$(pwd)/output:/app/output" ghcr.io/ericwastaken/payloadstash:main'
+```
+
+After sourcing your shell profile, use it exactly like the native CLI:
+
+```bash
+payloadstash run config-example.yml --out /app/output
+payloadstash validate config-example.yml
+payloadstash run config-example.yml --out /app/output --secrets /app/config/my-secrets.env
+```
+
+Notes:
+- `./config` on the host is mounted to `/app/config` in the container — place config and secrets files there.
+- `./output` on the host is mounted to `/app/output` in the container — always pass `--out /app/output`.
+- Replace `:main` with a version tag (e.g., `:1.0.0`) to pin to a specific release.
+
+---
+
+### Building and running locally from source
+
 - Prerequisites: Docker and Docker Compose (v2 preferred).
 - Build the image (one-time or when sources change):
   `./x-docker-build-payloadstash.sh`

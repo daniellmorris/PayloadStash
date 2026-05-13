@@ -108,6 +108,8 @@ class Request(BaseModel):
     RetryCfg: Optional[Retry] = Field(None, alias='Retry')
     Response: Optional[ResponseCfg] = None
     InsecureTLS: Optional[bool] = None
+    Capture: Optional[Dict[str, str]] = None
+    Expect: Optional[List[Dict[str, Any]]] = None
 
 
 class RequestItem(BaseModel):
@@ -626,6 +628,11 @@ def build_resolved_config_dict(cfg: TopLevelConfig, secrets: Optional[Dict[str, 
                     inner["Retry"] = None
                 else:
                     inner["Retry"] = retry_value.model_dump(by_alias=True, exclude_none=True)
+
+            if req.Capture is not None:
+                inner["Capture"] = req.Capture
+            if req.Expect is not None:
+                inner["Expect"] = req.Expect
 
             resolved_requests.append(req_out)
 

@@ -156,6 +156,161 @@ def resolve_deferred(value: Any, *, secrets: Optional[Dict[str, str]] = None, re
     return value
 
 
+import json as _json_module
+
+_CAPTURED_RE = re.compile(r'\$\{captured\.([^}]+)\}')
+_PATH_ARRAY_RE = re.compile(r'^\[(\d+)\](.*)', re.DOTALL)
+_PATH_DOT_RE = re.compile(r'^\.([^\.\[]+)(.*)', re.DOTALL)
+
+
+def _navigate_path(obj: Any, path_rest: str) -> Any:
+    """Traverse a parsed object using dot/bracket notation remainder."""
+    if not path_rest:
+        return obj
+    arr = _PATH_ARRAY_RE.match(path_rest)
+    if arr:
+        idx, rest = int(arr.group(1)), arr.group(2)
+        if isinstance(obj, list) and 0 <= idx < len(obj):
+            return _navigate_path(obj[idx], rest)
+        return None
+    dot = _PATH_DOT_RE.match(path_rest)
+    if dot:
+        key, rest = dot.group(1), dot.group(2)
+        if isinstance(obj, dict) and key in obj:
+            return _navigate_path(obj[key], rest)
+        return None
+    return None
+
+
+def resolve_response_path(path: str, status: int, headers: Dict[str, str], body_text: str, duration_ms: int) -> Any:
+    """Resolve a path string (status, headers.x, body.x.y, duration_ms) against a response."""
+    if path == "status":
+        return status
+    if path == "duration_ms":
+        return duration_ms
+    if path.startswith("headers."):
+        return headers.get(path[len("headers."):].lower())
+    if path == "body":
+        try:
+            return _json_module.loads(body_text)
+        except Exception:
+            return body_text
+    if path.startswith("body"):
+        rest = path[len("body"):]
+        if not rest:
+            try:
+                return _json_module.loads(body_text)
+            except Exception:
+                return body_text
+        try:
+            return _navigate_path(_json_module.loads(body_text), rest)
+        except Exception:
+            return None
+    return None
+
+
+def resolve_captured_refs(value: Any, captures: Dict[str, Any]) -> Any:
+    """Replace ${captured.KEY} placeholders with values from the captures dict."""
+    if isinstance(value, str):
+        def _repl(m: re.Match) -> str:
+            v = captures.get(m.group(1))
+            return str(v) if v is not None else m.group(0)
+        return _CAPTURED_RE.sub(_repl, value)
+    if isinstance(value, dict):
+        return {k: resolve_captured_refs(v, captures) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve_captured_refs(v, captures) for v in value]
+    return value
+
+
+def _apply_matcher(matcher_key: str, actual: Any, expected: Any) -> Tuple[bool, str]:
+    """Apply one matcher. Returns (passed, failure_detail_or_empty_string)."""
+    if matcher_key == "equals":
+        passed = actual == expected
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "notEquals":
+        passed = actual != expected
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "exists":
+        passed = (actual is not None) if expected else (actual is None)
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "matches":
+        try:
+            passed = bool(re.search(str(expected), str(actual)))
+        except Exception:
+            passed = False
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "notMatches":
+        try:
+            passed = not bool(re.search(str(expected), str(actual)))
+        except Exception:
+            passed = False
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "contains":
+        if isinstance(actual, list):
+            passed = expected in actual
+        elif actual is not None:
+            passed = str(expected) in str(actual)
+        else:
+            passed = False
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "notContains":
+        if isinstance(actual, list):
+            passed = expected not in actual
+        elif actual is not None:
+            passed = str(expected) not in str(actual)
+        else:
+            passed = True
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    if matcher_key == "type":
+        type_map: Dict[str, Any] = {
+            "string": str, "number": (int, float), "integer": int,
+            "boolean": bool, "object": dict, "array": list, "null": type(None),
+        }
+        exp_type = type_map.get(str(expected))
+        if exp_type is None:
+            return False, f"    unknown type: {expected!r}"
+        if expected in ("integer", "number") and isinstance(actual, bool):
+            return False, "    actual type: bool"
+        passed = isinstance(actual, exp_type)
+        return passed, f"    actual type: {type(actual).__name__}" if not passed else ""
+    if matcher_key in ("gt", "gte", "lt", "lte"):
+        try:
+            a, e = float(actual), float(expected)
+            ops = {"gt": a > e, "gte": a >= e, "lt": a < e, "lte": a <= e}
+            passed = ops[matcher_key]
+        except Exception:
+            passed = False
+        return passed, f"    actual: {actual!r}" if not passed else ""
+    return False, f"    unknown matcher: {matcher_key!r}"
+
+
+def evaluate_expect(
+    expect_list: List[Dict[str, Any]],
+    status: int,
+    headers: Dict[str, str],
+    body_text: str,
+    duration_ms: int,
+) -> List[Tuple[str, bool, str]]:
+    """
+    Evaluate Expect assertions against a response.
+    Returns list of (label, passed, failure_detail).
+    """
+    results: List[Tuple[str, bool, str]] = []
+    for item in expect_list:
+        if not isinstance(item, dict) or len(item) != 1:
+            continue
+        path, matcher_spec = next(iter(item.items()))
+        actual = resolve_response_path(str(path), status, headers, body_text, duration_ms)
+        if not isinstance(matcher_spec, dict):
+            matcher_spec = {"equals": matcher_spec}
+        for mk, mv in matcher_spec.items():
+            passed, detail = _apply_matcher(str(mk), actual, mv)
+            label = f"{path} {mk} {mv!r}"
+            results.append((label, passed, detail))
+    return results
+
+
 def load_secrets_file(path: str | Path) -> Dict[str, str]:
     """Load a .env-like secrets file with KEY=VALUE lines.
 
