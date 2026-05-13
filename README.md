@@ -71,7 +71,7 @@ docker run --rm --platform linux/amd64 \
 **Alias** — add to `~/.bashrc` or `~/.zshrc` for everyday use:
 
 ```bash
-alias payloadstash='docker run --rm --platform linux/amd64 -v "$(pwd)/config:/app/config" -v "$(pwd)/output:/app/output" ghcr.io/ericwastaken/payloadstash:main'
+alias payloadstash='docker run --rm -it --platform linux/amd64 -v "$(pwd)/config:/app/config" -v "$(pwd)/output:/app/output" ghcr.io/ericwastaken/payloadstash:main'
 ```
 
 After sourcing your shell profile, use it exactly like the native CLI:
