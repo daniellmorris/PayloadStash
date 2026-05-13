@@ -45,6 +45,20 @@ def _write_markdown_report(report_path, sc_name: str, config_stem: str, started_
         lines.append(f"| 📦 Executed | {n_executed} |")
     lines.append(f"| **Total** | **{total}** |")
     lines.append("")
+
+    # Assertion list — one row per assertion across all requests that have Expect.
+    # Requests without Expect are omitted here (they appear as 📦 in the detail sections).
+    expect_entries = [e for e in entries_sorted if e["expect_results"]]
+    if expect_entries:
+        lines.append("## Assertions\n")
+        lines.append("| Request | Assertion | |")
+        lines.append("|---|---|---|")
+        for e in expect_entries:
+            for label, passed, _ in e["expect_results"]:
+                icon = "✅" if passed else "❌"
+                lines.append(f"| `{e['r_key']}` | `{label}` | {icon} |")
+        lines.append("")
+
     lines.append("---\n")
 
     def _body_snippet(text: str, ct: str | None) -> str:
